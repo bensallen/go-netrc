@@ -36,10 +36,46 @@ var keywords = map[string]tkType{
 }
 
 type Netrc struct {
-	tokens     []*token
-	machines   []*Machine
-	macros     Macros
-	updateLock sync.Mutex
+	tokens   []*token
+	machines []*Machine
+	// byName indexes machines by name so FindMachine does not scan. It holds
+	// the first machine for each name, matching the order a scan would find.
+	// Default machines are excluded; defaultMachine holds those.
+	byName map[string]*Machine
+	// defaultMachine is the last "default" entry, which is the one a scan
+	// would settle on.
+	defaultMachine *Machine
+	macros         Macros
+	updateLock     sync.Mutex
+}
+
+// indexMachine records m in the lookup index. Machines are indexed in the
+// order they appear, and the first entry for a name wins so that lookups
+// agree with a sequential scan.
+func (n *Netrc) indexMachine(m *Machine) {
+	if m.IsDefault() {
+		n.defaultMachine = m
+		return
+	}
+	if n.byName == nil {
+		n.byName = make(map[string]*Machine)
+	}
+	if _, ok := n.byName[m.Name]; !ok {
+		n.byName[m.Name] = m
+	}
+}
+
+// reindex rebuilds the lookup index from n.machines. Used after mutations
+// that can reorder or remove entries.
+func (n *Netrc) reindex() {
+	n.byName = make(map[string]*Machine, len(n.machines))
+	n.defaultMachine = nil
+	for _, m := range n.machines {
+		if m == nil {
+			continue
+		}
+		n.indexMachine(m)
+	}
 }
 
 // FindMachine returns the Machine in n named by name. If a machine named by
@@ -48,19 +84,13 @@ type Netrc struct {
 // is returned.
 func (n *Netrc) FindMachine(name string) (m *Machine) {
 	// TODO(bgentry): not safe for concurrency
-	var def *Machine
-	for _, m = range n.machines {
-		if m.Name == name {
-			return m
-		}
-		if m.IsDefault() {
-			def = m
-		}
+	if m, ok := n.byName[name]; ok {
+		return m
 	}
-	if def == nil {
+	if n.defaultMachine == nil {
 		return nil
 	}
-	return def
+	return n.defaultMachine
 }
 
 // MarshalText implements the encoding.TextMarshaler interface to encode a
@@ -128,10 +158,12 @@ func (n *Netrc) NewMachine(name, login, password, account string) *Machine {
 	for i := range n.machines {
 		if n.machines[i].IsDefault() {
 			n.machines = append(append(n.machines[:i], m), n.machines[i:]...)
+			n.reindex()
 			return m
 		}
 	}
 	n.machines = append(n.machines, m)
+	n.indexMachine(m)
 	return m
 }
 
@@ -171,6 +203,7 @@ func (n *Netrc) RemoveMachine(name string) {
 				n.removeToken(t)
 			}
 			n.machines = append(n.machines[:i], n.machines[i+1:]...)
+			n.reindex()
 			return
 		}
 	}
@@ -414,6 +447,7 @@ func parse(r io.Reader, pos int) (*Netrc, error) {
 				return nil, &Error{pos, "multiple default token"}
 			}
 			if m != nil {
+				nrc.indexMachine(m)
 				nrc.machines, m = append(nrc.machines, m), nil
 			}
 			m = new(Machine)
@@ -424,6 +458,7 @@ func parse(r io.Reader, pos int) (*Netrc, error) {
 				return nil, &Error{pos, errBadDefaultOrder}
 			}
 			if m != nil {
+				nrc.indexMachine(m)
 				nrc.machines, m = append(nrc.machines, m), nil
 			}
 			m = new(Machine)
@@ -469,6 +504,7 @@ func parse(r io.Reader, pos int) (*Netrc, error) {
 	}
 
 	if m != nil {
+		nrc.indexMachine(m)
 		nrc.machines, m = append(nrc.machines, m), nil
 	}
 	return &nrc, nil
