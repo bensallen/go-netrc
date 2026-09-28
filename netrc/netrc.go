@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -157,7 +158,7 @@ func (n *Netrc) NewMachine(name, login, password, account string) *Machine {
 	n.insertMachineTokensBeforeDefault(m)
 	for i := range n.machines {
 		if n.machines[i].IsDefault() {
-			n.machines = append(append(n.machines[:i], m), n.machines[i:]...)
+			n.machines = slices.Insert(n.machines, i, m)
 			n.reindex()
 			return m
 		}

@@ -85,3 +85,33 @@ func TestIndexAfterMutations(t *testing.T) {
 	nrc.RemoveMachine("absent")
 	check("after removing a nonexistent machine")
 }
+
+// A default inserted later must still be reachable, and NewMachine must be
+// inserted before it rather than overwriting it.
+func TestIndexWithDefaultAndNewMachine(t *testing.T) {
+	nrc, err := Parse(strings.NewReader("machine a login l1 password p1\ndefault login dl password dp\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nrc.NewMachine("z", "lz", "pz", "")
+
+	for _, q := range []string{"a", "z", "unknown"} {
+		if got, want := nrc.FindMachine(q), nrc.oldFindMachine(q); got != want {
+			t.Errorf("query %q: indexed=%v scan=%v", q, describe(got), describe(want))
+		}
+	}
+	// An unknown host must fall through to the default.
+	if m := nrc.FindMachine("unknown"); m == nil || m.Login != "dl" {
+		t.Errorf("default fallback = %v, want the default machine", describe(nrc.FindMachine("unknown")))
+	}
+	// The new machine must appear exactly once, before the default.
+	var names []string
+	for _, m := range nrc.machines {
+		names = append(names, m.Name)
+	}
+	want := []string{"a", "z", ""}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("machine order = %v, want %v", names, want)
+	}
+}
